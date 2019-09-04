@@ -162,6 +162,7 @@ buildArgs "codeworld" =
     , "-fno-warn-unused-matches"
     , "-fdefer-type-errors"
     , "-fdefer-out-of-scope-variables"
+    , "-fmax-relevant-binds=0"
     , "-Wno-partial-type-signatures"
     , "-XBangPatterns"
     , "-XDisambiguateRecordFields"

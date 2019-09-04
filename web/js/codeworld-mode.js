@@ -56,14 +56,19 @@ CodeMirror.defineMode('codeworld', (config, modeConfig) => {
     //
     // func:         The function to tokenize the remaining stream.
     // commentLevel: Number of levels of block comments.
-    // continued:    The last token cannot end a layout statement.
+    // continued:    The last token cannot end an expression or layout statement.
     // contexts:     Grouping contexts, from outermost to innermost.
     //               Array of objects
     //               {
     //                 value: '{'. '(', '[', 'let', or 'other'
-    //                 column: integer,
+    //                 column: base indent column for the context,
+    //                 ln: line at which the context started
+    //                 ch: column at which the context started
+    //                 functionName: string (optional)
+    //                 argIndex: integer (optional)
     //               }
     // lastTokens:   Array of last up-to-two tokens encountered.
+    // line:         Current line number
 
     function isBracket(context) {
         return context.value.length === 1;
@@ -95,14 +100,18 @@ CodeMirror.defineMode('codeworld', (config, modeConfig) => {
         if (stream.match(RE_CONID)) return 'variable-2';
         if (stream.match(RE_NUMBER)) return 'number';
         if (stream.match(RE_CHAR) || stream.match(RE_STRING)) return 'string';
-        if (stream.match(RE_OPENBRACKET) || stream.match(RE_CLOSEBRACKET)) return 'bracket';
+        if (stream.match(RE_CLOSEBRACKET)) return 'bracket';
+        if (stream.match(RE_OPENBRACKET)) {
+            state.continued = true;
+            return 'bracket';
+        }
 
         if (stream.match(RE_VARID)) {
             if (['case', 'of', 'class', 'data', 'instance', 'deriving',
                 'do', 'if', 'then', 'else', 'import', 'infix', 'infixl',
                 'infixr', 'instance', 'let', 'in', 'module', 'newtype',
                 'type', 'where'
-            ].indexOf(stream.current()) > 0) {
+            ].indexOf(stream.current()) >= 0) {
                 state.continued = true;
             }
             return 'variable';
@@ -178,8 +187,8 @@ CodeMirror.defineMode('codeworld', (config, modeConfig) => {
         return result;
     })();
 
-    function parseToken(stream, column, state) {
-        const t = state.func(stream, column, state);
+    function parseToken(stream, state) {
+        const t = state.func(stream, stream.column(), state);
         if (['variable', 'variable-2'].indexOf(t) !== -1) {
             const w = stream.current();
             if (wellKnownWords.hasOwnProperty(w)) {
@@ -211,7 +220,9 @@ CodeMirror.defineMode('codeworld', (config, modeConfig) => {
             if (token !== 'module' && token !== '{') {
                 state.contexts.push({
                     value: 'where', // There's an implied "module Main where"
-                    column: column
+                    column: column,
+                    ln: state.line,
+                    ch: column
                 });
             }
         } else {
@@ -224,7 +235,9 @@ CodeMirror.defineMode('codeworld', (config, modeConfig) => {
             if (triggered && token !== '{') {
                 state.contexts.push({
                     value: state.lastTokens.slice(-1)[0],
-                    column: column
+                    column: column,
+                    ln: state.line,
+                    ch: column
                 });
             }
         }
@@ -233,8 +246,9 @@ CodeMirror.defineMode('codeworld', (config, modeConfig) => {
         state.lastTokens = state.lastTokens.slice(-1);
         state.lastTokens.push(token);
 
-        // Close implicit contexts on comma.
+        // Close contexts when syntax demands that we do so.
         if (token === ',') {
+            // Close implicit contexts on comma.
             while (state.contexts.length) {
                 const topContext = state.contexts.pop();
                 if (!state.contexts.length || isBracket(topContext)) {
@@ -243,10 +257,9 @@ CodeMirror.defineMode('codeworld', (config, modeConfig) => {
                     break;
                 }
             }
-        }
-
-        // Close contexts when syntax demands that we do so.
-        if (RE_CLOSEBRACKET.test(token) || (!foundLet && token === 'in')) {
+        } else if (RE_CLOSEBRACKET.test(token) || (!foundLet && token === 'in')) {
+            // Close contexts inside brackets when the brackets are closed.
+            // Note that let/in counts as a bracket pair for this purposes.
             state.contexts.reverse();
             const reverseIndex = state.contexts.findIndex(ctx => ctx.value === opening(token));
             state.contexts.reverse();
@@ -254,9 +267,15 @@ CodeMirror.defineMode('codeworld', (config, modeConfig) => {
                 const index = state.contexts.length - reverseIndex - 1;
                 while (state.contexts.length > index) state.contexts.pop();
                 if (token !== 'in') {
+                    // Update the style to indicate bracket level.
                     const level = state.contexts.filter(isBracket).length;
                     if (level <= 6) style = `${style}-${level}`;
                 }
+            }
+        } else if (token === 'where') {
+            const topContext = () => state.contexts[state.contexts.length - 1];
+            while (state.contexts.length > 0 && ['let', 'of', 'do', 'case'].indexOf(topContext().value) >= 0) {
+                state.contexts.pop();
             }
         }
 
@@ -282,9 +301,15 @@ CodeMirror.defineMode('codeworld', (config, modeConfig) => {
                 }
             }
 
+            let newColumn = 0;
+            if (state.contexts.length > 0) {
+                newColumn = state.contexts[state.contexts.length - 1].column + config.indentUnit;
+            }
             state.contexts.push({
                 value: token,
-                column: column,
+                column: newColumn,
+                ln: state.line,
+                ch: column,
                 functionName,
                 argIndex: 0
             });
@@ -300,19 +325,43 @@ CodeMirror.defineMode('codeworld', (config, modeConfig) => {
                 commentLevel: 0,
                 continued: false,
                 contexts: [],
-                lastTokens: []
+                lastTokens: [],
+                line: 0
+            };
+        },
+        copyState: state => {
+            return {
+                func: state.func,
+                commentLevel: state.commentLevel,
+                continued: state.continued,
+                contexts: state.contexts.map(ctx => {
+                    return {
+                        value: ctx.value,
+                        column: ctx.column,
+                        ln: ctx.ln,
+                        ch: ctx.ch,
+                        functionName: ctx.functionName,
+                        argIndex: ctx.argIndex || 0
+                    };
+                }),
+                lastTokens: state.lastTokens.map(t => t),
+                line: state.line
             };
         },
         token: (stream, state) => {
             const column = stream.column();
-            const style = parseToken(stream, column, state);
+            let style = parseToken(stream, state);
 
             // Ignore whitespaces and comments for layout purposes.
-            if (style === null || style === 'comment' || style === 'meta') {
-                return style;
+            if (style !== null && style !== 'comment' && style !== 'meta') {
+                style = updateLayout(stream.current(), column, style, state);
             }
 
-            return updateLayout(stream.current(), column, style, state);
+            if (stream.eol()) state.line++;
+            return style;
+        },
+        blankLine: state => {
+            state.line++;
         },
         indent: (state, textAfter) => {
             if (state.commentLevel > 0 || state.contexts.length < 1) return CodeMirror.Pass;
@@ -321,9 +370,13 @@ CodeMirror.defineMode('codeworld', (config, modeConfig) => {
             // this is the layout above the one that's closed, but an extra indent is
             // needed.  Otherwise, it's the top of the stack.
             let topLayout = state.contexts.length - 1;
-            const token = textAfter.match(/^in\b|[,)\]}]/);
+            const token = textAfter.match(/^(in\b|where\b|[,)\]}])/);
             if (token && token[0] === ',') {
                 while (topLayout > 0 && !isBracket(state.contexts[topLayout])) {
+                    --topLayout;
+                }
+            } else if (token && token[0] === 'where') {
+                while (topLayout > 0 && ['let', 'of', 'do', 'case'].indexOf(state.contexts[topLayout].value) >= 0) {
                     --topLayout;
                 }
             } else if (token && state.contexts.findIndex(ctx => ctx.value === opening(token[0])) >= 1) {
@@ -333,13 +386,10 @@ CodeMirror.defineMode('codeworld', (config, modeConfig) => {
                 --topLayout;
             }
 
-            while (topLayout > 0 && isBracket(state.contexts[topLayout])) --topLayout;
-
             const layoutIndent = state.contexts[topLayout].column || 0;
-            const extraIndent = state.continued || topLayout < state.contexts.length - 1;
 
-            if (/^where/.test(textAfter)) return layoutIndent + Math.ceil(config.indentUnit / 2);
-            else if (extraIndent || RE_ELECTRIC_START.test(textAfter)) return layoutIndent + config.indentUnit;
+            if (/^(where|[|])/.test(textAfter)) return layoutIndent + Math.ceil(config.indentUnit / 2);
+            else if (state.continued || RE_ELECTRIC_START.test(textAfter)) return layoutIndent + config.indentUnit;
             else return layoutIndent;
         },
         electricInput: RE_ELECTRIC_INPUT,

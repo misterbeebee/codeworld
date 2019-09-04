@@ -150,6 +150,8 @@ window.codeWorldBuiltins = {
     }
 };
 
+window.alreadyReportedErrors = new Set();
+
 function getWordStart(word, line) {
     return line.indexOf(word);
 }
@@ -272,7 +274,6 @@ function parseSymbolsFromCurrentCode() {
     }
 
     if (window.buildMode === 'codeworld') {
-        console.log(imports);
         const symbols = Object.assign({}, window.codeWorldBuiltins);
         for (const i of imports) {
             if (i.module in window.codeWorldModules) {
@@ -625,8 +626,10 @@ function signin() {
 }
 
 function signout() {
-    clearWorkspace();
-    if (window.auth2) window.auth2.signOut();
+    warnIfUnsaved(() => {
+        clearWorkspace();
+        if (window.auth2) window.auth2.signOut();
+    });
 }
 
 function signedIn() {
@@ -1306,9 +1309,9 @@ function preFormatMessage(msg) {
 
     msg = Html.encode(msg)
         .replace(/program\.hs:(\d+):((\d+)(-\d+)?)/g,
-            '<a href="#" onclick="goto($1, $3);">Line $1, Column $2</a>')
+            '<a href="#" onclick="goto($1, $3); return false;">Line $1, Column $2</a>')
         .replace(/program\.hs:\((\d+),(\d+)\)-\((\d+),(\d+)\)/g,
-            '<a href="#" onclick="goto($1, $2);">Line $1-$3, Column $2-$4</a>');
+            '<a href="#" onclick="goto($1, $2); return false;">Line $1-$3, Column $2-$4</a>');
     return msg;
 }
 
@@ -1362,19 +1365,29 @@ function printMessage(type, message) {
     }
 
     if (type === 'error' || type === 'warning') {
-        const reportLink = document.createElement('a');
-        reportLink.setAttribute('href', '#');
-        reportLink.classList.add('report-unhelpful');
-        reportLink.onclick = event => sendUnhelpfulReport(event, message);
-        reportLink.innerText = 'Not helpful?';
-        firstLine.appendChild(reportLink);
+        if (!window.alreadyReportedErrors.has(scrubError(message))) {
+            const reportLink = document.createElement('a');
+            reportLink.setAttribute('href', '#');
+            reportLink.classList.add('report-unhelpful');
+            reportLink.onclick = event => sendUnhelpfulReport(event, message, reportLink);
+            reportLink.innerText = 'Not helpful?';
+            firstLine.appendChild(reportLink);
+        }
     }
 
     outputDiv.appendChild(box);
     outputDiv.scrollTop = outputDiv.scrollHeight;
 }
 
-function sendUnhelpfulReport(event, message) {
+function sendUnhelpfulReport(event, message, reportLink) {
+    if (window.alreadyReportedErrors.has(scrubError(message))) {
+        sweetAlert({
+            type: 'info',
+            text: 'You have already reported this message.  Thank you for your feedback.'
+        });
+        reportLink.style.display = 'none';
+        return;
+    }
     sweetAlert({
         title: Alert.title('Report unhelpful message:', 'mdi-flag-variant'),
         text: 'The report will include your code.',
@@ -1398,8 +1411,15 @@ function sendUnhelpfulReport(event, message) {
             type: 'success',
             text: 'Thank you for your feedback.'
         });
+
+        reportLink.style.display = 'none';
+        window.alreadyReportedErrors.add(scrubError(message));
     });
     event.preventDefault();
+}
+
+function scrubError(msg) {
+    return msg.replace(/program[.]hs:[0-9:-]*/g, '(loc)');
 }
 
 function clearMessages() {
