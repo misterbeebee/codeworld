@@ -93,6 +93,9 @@ if [ ! -f $BUILD/progress/system-pkgs ]; then
     run . sudo apt-get install -y autoconf
     run . sudo apt-get install -y automake
     run . sudo apt-get install -y libtinfo-dev
+    run . sudo apt-get install -y gettext
+    # libtinfo is on 6 now, but this project needs 5
+    run . sudo apt-get install -y libtinfo5
 
     # Needed for codeworld-auth
     run . sudo apt-get install -y libssl-dev
@@ -211,7 +214,7 @@ function fix_libexec_binary {
 }
 
 if [ ! -f $BUILD/progress/ghcjs ]; then
-  run .            cabal v2-install happy-1.19.9 alex --installdir=$BUILD/bin
+  run .            cabal v2-install happy-1.19.9 alex --installdir=$BUILD/bin --overwrite-policy=always
   run $BUILD       rm -rf ghcjs
   run $BUILD       git clone --branch ghc-8.6 --single-branch https://github.com/ghcjs/ghcjs.git
   run $BUILD/ghcjs git submodule update --init --recursive
